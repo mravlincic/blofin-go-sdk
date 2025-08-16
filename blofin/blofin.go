@@ -186,7 +186,7 @@ func (c *Client) GetPositions(instId string) (*PositionsResponse, error) {
 	}
 
 	if positionsResp.Code != "0" {
-		return &positionsResp, fmt.Errorf("api error: %s", positionsResp.Msg)
+		return &positionsResp, fmt.Errorf("api error: %v", positionsResp)
 	}
 
 	return &positionsResp, nil
@@ -240,7 +240,7 @@ func (c *Client) GetMarginMode() (*MarginModeResponse, error) {
 	}
 
 	if marginResp.Code != "0" {
-		return &marginResp, fmt.Errorf("api error: %s", marginResp.Msg)
+		return &marginResp, fmt.Errorf("api error: %v", marginResp)
 	}
 
 	return &marginResp, nil
@@ -358,7 +358,7 @@ func (c *Client) GetOrdersHistory(
 	}
 
 	if orderResp.Code != "0" {
-		return &orderResp, fmt.Errorf("api error: %s", orderResp.Msg)
+		return &orderResp, fmt.Errorf("api error: %v", orderResp)
 	}
 
 	return &orderResp, nil
@@ -413,7 +413,7 @@ func (c *Client) GetPositionMode() (*PositionModeResponse, error) {
 	}
 
 	if positionModeResp.Code != "0" {
-		return &positionModeResp, fmt.Errorf("api error: %s", positionModeResp.Msg)
+		return &positionModeResp, fmt.Errorf("api error: %v", positionModeResp)
 	}
 
 	return &positionModeResp, nil
@@ -528,10 +528,212 @@ func (c *Client) GetActiveOrders(
 	}
 
 	if activeOrdersResp.Code != "0" {
-		return &activeOrdersResp, fmt.Errorf("api error: %s", activeOrdersResp.Msg)
+		return &activeOrdersResp, fmt.Errorf("api error: %v", activeOrdersResp)
 	}
 
 	return &activeOrdersResp, nil
+}
+
+type ActiveTPSLOrder struct {
+	TpslID         string  `json:"tpslId"`
+	ClientOrderID  string  `json:"clientOrderId"`
+	InstID         string  `json:"instId"`
+	MarginMode     string  `json:"marginMode"`
+	PositionSide   string  `json:"positionSide"`
+	Side           string  `json:"side"`
+	TpTriggerPrice *string `json:"tpTriggerPrice"` // nullable
+	TpOrderPrice   *string `json:"tpOrderPrice"`   // nullable
+	SlTriggerPrice *string `json:"slTriggerPrice"` // nullable
+	SlOrderPrice   *string `json:"slOrderPrice"`   // nullable
+	Size           string  `json:"size"`
+	State          string  `json:"state"`
+	Leverage       string  `json:"leverage"`
+	ReduceOnly     string  `json:"reduceOnly"`
+	ActualSize     *string `json:"actualSize"` // nullable
+	CreateTime     string  `json:"createTime"`
+	BrokerID       string  `json:"brokerId"`
+}
+
+type ActiveTPSLOrdersResponse struct {
+	Code string            `json:"code"`
+	Msg  string            `json:"msg"`
+	Data []ActiveTPSLOrder `json:"data"`
+}
+
+// GetActiveTPSLOrders retrieves a list of untriggered TP/SL orders under the current account.
+// Pass empty string "" for any filter you want to skip.
+// Note: The before and after parameters cannot be used simultaneously.
+func (c *Client) GetActiveTPSLOrders(
+	instId, tpslId, clientOrderId, after, before, limit string,
+) (*ActiveTPSLOrdersResponse, error) {
+	basePath := "/api/v1/trade/orders-tpsl-pending"
+
+	// Build query parameters
+	v := url.Values{}
+	if instId != "" {
+		v.Set("instId", instId)
+	}
+	if tpslId != "" {
+		v.Set("tpslId", tpslId)
+	}
+	if clientOrderId != "" {
+		v.Set("clientOrderId", clientOrderId)
+	}
+	if after != "" && before != "" {
+		// According to docs, before and after cannot be simultaneous
+		return nil, fmt.Errorf("parameters 'after' and 'before' cannot be used simultaneously")
+	}
+	if after != "" {
+		v.Set("after", after)
+	}
+	if before != "" {
+		v.Set("before", before)
+	}
+	if limit != "" {
+		v.Set("limit", limit)
+	}
+
+	path := basePath
+	if len(v) > 0 {
+		path = path + "?" + v.Encode()
+	}
+
+	method := "GET"
+	timestamp := strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
+	nonce := uuid.NewString()
+	body := "" // GET request has empty body
+
+	signature := c.signRequest(path, method, nonce, timestamp, body)
+
+	req, err := http.NewRequest(method, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("ACCESS-KEY", c.ApiKey)
+	req.Header.Set("ACCESS-SIGN", signature)
+	req.Header.Set("ACCESS-TIMESTAMP", timestamp)
+	req.Header.Set("ACCESS-NONCE", nonce)
+	req.Header.Set("ACCESS-PASSPHRASE", c.Passphrase)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var activeTPSLOrdersResp ActiveTPSLOrdersResponse
+	if err := json.Unmarshal(respBytes, &activeTPSLOrdersResp); err != nil {
+		return nil, err
+	}
+
+	if activeTPSLOrdersResp.Code != "0" {
+		return &activeTPSLOrdersResp, fmt.Errorf("api error: %v", activeTPSLOrdersResp)
+	}
+
+	return &activeTPSLOrdersResp, nil
+}
+
+type CancelTPSLOrderRequest struct {
+	InstID        string `json:"instId"`
+	TpslID        string `json:"tpslId"`
+	ClientOrderID string `json:"clientOrderId"`
+}
+
+type CancelTPSLOrdersRequest []CancelTPSLOrderRequest
+
+type CancelTPSLOrderData struct {
+	TpslID        string  `json:"tpslId"`
+	ClientOrderID *string `json:"clientOrderId"` // nullable
+	Code          string  `json:"code"`
+	Msg           string  `json:"msg"`
+}
+
+type CancelTPSLOrdersResponse struct {
+	Code string                `json:"code"`
+	Msg  string                `json:"msg"`
+	Data []CancelTPSLOrderData `json:"data"`
+}
+
+// CancelTPSLOrders cancels one or more TP/SL orders.
+// Each cancel request should specify either tpslId or clientOrderId (or both).
+// instId is optional but recommended for better performance.
+func (c *Client) CancelTPSLOrders(orders CancelTPSLOrdersRequest) (*CancelTPSLOrdersResponse, error) {
+	if len(orders) == 0 {
+		return nil, fmt.Errorf("orders slice cannot be empty")
+	}
+
+	path := "/api/v1/trade/cancel-tpsl"
+	method := "POST"
+	timestamp := strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
+	nonce := uuid.NewString()
+
+	bodyBytes, err := json.Marshal(orders)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+	bodyStr := string(bodyBytes)
+
+	signature := c.signRequest(path, method, nonce, timestamp, bodyStr)
+
+	httpReq, err := http.NewRequest(method, c.BaseURL+path, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
+	httpReq.Header.Set("ACCESS-KEY", c.ApiKey)
+	httpReq.Header.Set("ACCESS-SIGN", signature)
+	httpReq.Header.Set("ACCESS-TIMESTAMP", timestamp)
+	httpReq.Header.Set("ACCESS-NONCE", nonce)
+	httpReq.Header.Set("ACCESS-PASSPHRASE", c.Passphrase)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var cancelResp CancelTPSLOrdersResponse
+	if err := json.Unmarshal(respBytes, &cancelResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if cancelResp.Code != "0" {
+		return &cancelResp, fmt.Errorf("API error: %s", cancelResp.Msg)
+	}
+
+	return &cancelResp, nil
+}
+
+// CancelTPSLOrder is a convenience method to cancel a single TP/SL order.
+// You can specify either tpslId or clientOrderId (or both).
+// instId is optional but recommended for better performance.
+func (c *Client) CancelTPSLOrder(instId, tpslId, clientOrderId string) (*CancelTPSLOrdersResponse, error) {
+	if tpslId == "" && clientOrderId == "" {
+		return nil, fmt.Errorf("either tpslId or clientOrderId must be provided")
+	}
+
+	orders := CancelTPSLOrdersRequest{
+		{
+			InstID:        instId,
+			TpslID:        tpslId,
+			ClientOrderID: clientOrderId,
+		},
+	}
+
+	return c.CancelTPSLOrders(orders)
 }
 
 type Fill struct {
@@ -630,7 +832,7 @@ func (c *Client) GetFillsHistory(
 	}
 
 	if fillsResp.Code != "0" {
-		return &fillsResp, fmt.Errorf("api error: %s", fillsResp.Msg)
+		return &fillsResp, fmt.Errorf("api error: %v", fillsResp)
 	}
 
 	return &fillsResp, nil
@@ -714,7 +916,7 @@ func (c *Client) GetInstruments(instId string) (*InstrumentsResponse, error) {
 	}
 
 	if instrResp.Code != "0" {
-		return &instrResp, fmt.Errorf("api error: %s", instrResp.Msg)
+		return &instrResp, fmt.Errorf("api error: %v", instrResp)
 	}
 
 	return &instrResp, nil
@@ -796,7 +998,7 @@ func (c *Client) GetTickers(instId string) (*TickersResponse, error) {
 	}
 
 	if tickersResp.Code != "0" {
-		return &tickersResp, fmt.Errorf("api error: %s", tickersResp.Msg)
+		return &tickersResp, fmt.Errorf("api error: %v", tickersResp)
 	}
 
 	return &tickersResp, nil
@@ -881,7 +1083,7 @@ func (c *Client) SetLeverage(instID, leverage, marginMode, positionSide string) 
 	}
 
 	if leverageResp.Code != "0" {
-		return &leverageResp, fmt.Errorf("API error: %s", leverageResp.Msg)
+		return &leverageResp, fmt.Errorf("API error: %v", leverageResp)
 	}
 
 	return &leverageResp, nil
@@ -952,7 +1154,7 @@ func (c *Client) CancelBatchOrders(batchReqs []CancelBatchOrderRequest) (*Cancel
 	}
 
 	if batchResp.Code != "0" {
-		return &batchResp, fmt.Errorf("API error: %s", batchResp.Msg)
+		return &batchResp, fmt.Errorf("API error: %v", batchResp)
 	}
 
 	return &batchResp, nil
@@ -1034,7 +1236,7 @@ func (c *Client) CancelOrder(orderId, instId, clientOrderId string) (*CancelOrde
 	}
 
 	if cancelResp.Code != "0" {
-		return &cancelResp, fmt.Errorf("api error: %s", cancelResp.Msg)
+		return &cancelResp, fmt.Errorf("api error: %v", cancelResp)
 	}
 
 	return &cancelResp, nil
@@ -1117,7 +1319,7 @@ func (c *Client) PlaceTPSLOrder(req PlaceTPSLOrderRequest) (*PlaceTPSLOrderRespo
 	}
 
 	if tpslResp.Code != "0" {
-		return &tpslResp, fmt.Errorf("API error: %s", tpslResp.Msg)
+		return &tpslResp, fmt.Errorf("API error: %v", tpslResp)
 	}
 
 	return &tpslResp, nil
@@ -1200,7 +1402,7 @@ func (c *Client) ClosePosition(instId, marginMode, positionSide, clientOrderId, 
 	}
 
 	if closeResp.Code != "0" {
-		return &closeResp, fmt.Errorf("API error: %s", closeResp.Msg)
+		return &closeResp, fmt.Errorf("API error: %v", closeResp)
 	}
 
 	return &closeResp, nil
@@ -1286,7 +1488,7 @@ func (c *Client) PlaceOrder(req PlaceOrderRequest) (*PlaceOrderResponse, error) 
 	}
 
 	if orderResp.Code != "0" {
-		return &orderResp, fmt.Errorf("API error: %s", orderResp.Msg)
+		return &orderResp, fmt.Errorf("API error: %v", orderResp)
 	}
 
 	return &orderResp, nil
@@ -1363,7 +1565,7 @@ func (c *Client) PlaceBatchOrders(orders PlaceBatchOrdersRequest) (*PlaceBatchOr
 	}
 
 	if batchResp.Code != "0" {
-		return &batchResp, fmt.Errorf("API error: %s", batchResp.Msg)
+		return &batchResp, fmt.Errorf("API error: %vs", batchResp)
 	}
 
 	return &batchResp, nil
@@ -1435,7 +1637,7 @@ func (c *Client) GetFundingRate(instId string) (*FundingRateResponse, error) {
 	}
 
 	if fundingResp.Code != "0" {
-		return &fundingResp, fmt.Errorf("api error: %s", fundingResp.Msg)
+		return &fundingResp, fmt.Errorf("api error: %v", fundingResp)
 	}
 
 	return &fundingResp, nil
